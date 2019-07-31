@@ -56,38 +56,45 @@ const gsl_rng_type * gsl_T;
 gsl_rng * gsl_r;
 
 /* Build a hash table, mapping each vertex name to a unique vertex id */
+//Pretty sure it can only contain 30000000 (hash_table_size) many vertices
 unsigned int Hash(char *key)
 {
 	unsigned int seed = 131;
 	unsigned int hash = 0;
-	while (*key)
+	while (*key) //Loop over each character in the string
 	{
 		hash = hash * seed + (*key++);
 	}
 	return hash % hash_table_size;
 }
 
+/*
+Initialize hashtable 
+Each entries gets a value of -1
+*/
 void InitHashTable()
 {
 	vertex_hash_table = (int *)malloc(hash_table_size * sizeof(int));
 	for (int k = 0; k != hash_table_size; k++) vertex_hash_table[k] = -1;
 }
 
+//Insert the vertex into the hashtable assigning it as value the current number of vertices
 void InsertHashTable(char *key, int value)
 {
-	int addr = Hash(key);
+	int addr = Hash(key);	//Get the unique vertex id for the vertex
 	while (vertex_hash_table[addr] != -1) addr = (addr + 1) % hash_table_size;
 	vertex_hash_table[addr] = value;
 }
 
+//Returns the index of the vertex or -1 if it is new
 int SearchHashTable(char *key)
 {
-	int addr = Hash(key);
+	int addr = Hash(key);	//Get the unique vertex id for the vertex
 	while (1)
 	{
-		if (vertex_hash_table[addr] == -1) return -1;
-		if (!strcmp(key, vertex[vertex_hash_table[addr]].name)) return vertex_hash_table[addr];
-		addr = (addr + 1) % hash_table_size;
+		if (vertex_hash_table[addr] == -1) return -1;	//Return -1 if the vertex is new
+		if (!strcmp(key, vertex[vertex_hash_table[addr]].name)) return vertex_hash_table[addr]; //If the input vertex name and the previously for this address assigned name are equal return this adress
+		addr = (addr + 1) % hash_table_size; //Else increment the adress and try it again
 	}
 	return -1;
 }
@@ -98,10 +105,11 @@ int AddVertex(char *name)
 	int length = strlen(name) + 1;
 	if (length > MAX_STRING) length = MAX_STRING;
 	vertex[num_vertices].name = (char *)calloc(length, sizeof(char));
+	//Assign it the name and set the degree to 0
 	strncpy(vertex[num_vertices].name, name, length-1);
 	vertex[num_vertices].degree = 0;
 	num_vertices++;
-	if (num_vertices + 2 >= max_num_vertices)
+	if (num_vertices + 2 >= max_num_vertices) //If the current vertex array only has one entry left increase its size by 1000
 	{
 		max_num_vertices += 1000;
 		vertex = (struct ClassVertex *)realloc(vertex, max_num_vertices * sizeof(struct ClassVertex));
@@ -125,10 +133,11 @@ void ReadData()
 		exit(1);
 	}
 	num_edges = 0;
-	while (fgets(str, sizeof(str), fin)) num_edges++;
+	while (fgets(str, sizeof(str), fin)) num_edges++;	//Determine number of edges
 	fclose(fin);
 	printf("Number of edges: %lld          \n", num_edges);
 
+	//Init memory for edge vectors
 	edge_source_id = (int *)malloc(num_edges*sizeof(int));
 	edge_target_id = (int *)malloc(num_edges*sizeof(int));
 	edge_weight = (double *)malloc(num_edges*sizeof(double));
@@ -140,6 +149,7 @@ void ReadData()
 
 	fin = fopen(network_file, "rb");
 	num_vertices = 0;
+	//Reading edges
 	for (int k = 0; k != num_edges; k++)
 	{
 		fscanf(fin, "%s %s %lf", name_v1, name_v2, &weight);
@@ -150,15 +160,15 @@ void ReadData()
 			fflush(stdout);
 		}
 
-		vid = SearchHashTable(name_v1);
-		if (vid == -1) vid = AddVertex(name_v1);
-		vertex[vid].degree += weight;
-		edge_source_id[k] = vid;
+		vid = SearchHashTable(name_v1);	//Returns the index of the vertex or -1 if it is new
+		if (vid == -1) vid = AddVertex(name_v1); //Add the new vertex to the set
+		vertex[vid].degree += weight; //Increment the vertex degree by the weight of the edge
+		edge_source_id[k] = vid; //Set the source vertex of the edge to the vertex index
 
-		vid = SearchHashTable(name_v2);
-		if (vid == -1) vid = AddVertex(name_v2);
-		vertex[vid].degree += weight;
-		edge_target_id[k] = vid;
+		vid = SearchHashTable(name_v2); //Returns the index of the vertex or -1 if it is new
+		if (vid == -1) vid = AddVertex(name_v2); //Add the new vertex to the set
+		vertex[vid].degree += weight; //Increment the vertex degree by the weight of the edge
+		edge_target_id[k] = vid; //Set the source vertex of the edge to the vertex index
 
 		edge_weight[k] = weight;
 	}
@@ -169,6 +179,7 @@ void ReadData()
 /* The alias sampling algorithm, which is used to sample an edge in O(1) time. */
 void InitAliasTable()
 {
+	//Allocate arrays with size equal to the number of edges
 	alias = (long long *)malloc(num_edges*sizeof(long long));
 	prob = (double *)malloc(num_edges*sizeof(double));
 	if (alias == NULL || prob == NULL)
@@ -190,15 +201,15 @@ void InitAliasTable()
 	long long cur_small_block, cur_large_block;
 	long long num_small_block = 0, num_large_block = 0;
 
-	for (long long k = 0; k != num_edges; k++) sum += edge_weight[k];
-	for (long long k = 0; k != num_edges; k++) norm_prob[k] = edge_weight[k] * num_edges / sum;
+	for (long long k = 0; k != num_edges; k++) sum += edge_weight[k]; //Sum up all edge weights
+	for (long long k = 0; k != num_edges; k++) norm_prob[k] = edge_weight[k] * num_edges / sum; //Each edge gets a probability based on its weight divided by the total weight of all edges
 
-	for (long long k = num_edges - 1; k >= 0; k--)
+	for (long long k = num_edges - 1; k >= 0; k--) //Divide the edges in two blocks
 	{
-		if (norm_prob[k]<1)
-			small_block[num_small_block++] = k;
+		if (norm_prob[k]<1) 
+			small_block[num_small_block++] = k; //Assign edge index to small_block if probability is smaller than the average
 		else
-			large_block[num_large_block++] = k;
+			large_block[num_large_block++] = k; //Assign edge index to large_block if probability is higher than the average
 	}
 
 	while (num_small_block && num_large_block)
@@ -233,15 +244,15 @@ void InitVector()
 {
 	long long a, b;
 
-	a = posix_memalign((void **)&emb_vertex, 128, (long long)num_vertices * dim * sizeof(real));
+	a = posix_memalign((void **)&emb_vertex, 128, (long long)num_vertices * dim * sizeof(real)); //For each vertex a float vector of size dim is allocated
 	if (emb_vertex == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
 	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
-		emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;
+		emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;	//Create random values in the intervall between -0.5 and 0.5 and divide them through the numbe of dimensions
 
 	a = posix_memalign((void **)&emb_context, 128, (long long)num_vertices * dim * sizeof(real));
 	if (emb_context == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
 	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
-		emb_context[a * dim + b] = 0;
+		emb_context[a * dim + b] = 0;	//Context vectors are initialized as 0 in all dimensions
 }
 
 /* Sample negative vertex samples according to vertex degrees */
@@ -249,8 +260,8 @@ void InitNegTable()
 {
 	double sum = 0, cur_sum = 0, por = 0;
 	int vid = 0;
-	neg_table = (int *)malloc(neg_table_size * sizeof(int));
-	for (int k = 0; k != num_vertices; k++) sum += pow(vertex[k].degree, NEG_SAMPLING_POWER);
+	neg_table = (int *)malloc(neg_table_size * sizeof(int)); //Allocate array of int with 100 million entries
+	for (int k = 0; k != num_vertices; k++) sum += pow(vertex[k].degree, NEG_SAMPLING_POWER); //Sum the vertex degrees (sum of weights of connected edges) to the power of 0.75
 	for (int k = 0; k != neg_table_size; k++)
 	{
 		if ((double)(k + 1) / neg_table_size > por)
@@ -264,17 +275,27 @@ void InitNegTable()
 }
 
 /* Fastly compute sigmoid function */
+//sigmoid_table_size = 1000
+//SIGMOID_BOUND = 6
+/*
+Pre calculate the sigmoid values for k = 0 ... 1000
+The result is the joint probability between two vertexes
+*/
 void InitSigmoidTable()
 {
 	real x;
-	sigmoid_table = (real *)malloc((sigmoid_table_size + 1) * sizeof(real));
+	sigmoid_table = (real *)malloc((sigmoid_table_size + 1) * sizeof(real)); 
 	for (int k = 0; k != sigmoid_table_size; k++)
 	{
 		x = 2.0 * SIGMOID_BOUND * k / sigmoid_table_size - SIGMOID_BOUND;
 		sigmoid_table[k] = 1 / (1 + exp(-x));
+		printf("%d\t%f\n", k, sigmoid_table[k]);
 	}
 }
 
+/*
+Returns the sigmoid (joint probability) of the vertex product (x)
+*/
 real FastSigmoid(real x)
 {
 	if (x > SIGMOID_BOUND) return 1;
@@ -291,62 +312,69 @@ int Rand(unsigned long long &seed)
 }
 
 /* Update embeddings */
+/*
+Updates the embeddings of the target vertex vec_v and adds the change regarding the source vertex to vec_error
+*/
 void Update(real *vec_u, real *vec_v, real *vec_error, int label)
 {
 	real x = 0, g;
-	for (int c = 0; c != dim; c++) x += vec_u[c] * vec_v[c];
+	for (int c = 0; c != dim; c++) x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
 	g = (label - FastSigmoid(x)) * rho;
 	for (int c = 0; c != dim; c++) vec_error[c] += g * vec_v[c];
 	for (int c = 0; c != dim; c++) vec_v[c] += g * vec_u[c];
 }
 
+//Thread to train the model
+//Probably not threadsafe at all
 void *TrainLINEThread(void *id)
 {
 	long long u, v, lu, lv, target, label;
 	long long count = 0, last_count = 0, curedge;
-	unsigned long long seed = (long long)id;
+	unsigned long long seed = (long long)id; //Init seed with the thread id
 	real *vec_error = (real *)calloc(dim, sizeof(real));
 
 	while (1)
 	{
 		//judge for exit
+		//Exit when the thread has done its share of the total number of samples to consider
 		if (count > total_samples / num_threads + 2) break;
 
+		//After 10000 samples print an update to the console and update variables
 		if (count - last_count > 10000)
 		{
-			current_sample_count += count - last_count;
+			current_sample_count += count - last_count; //Increment the global current_sample_count by the number of samples the current thread has done since the last check
 			last_count = count;
-			printf("%cRho: %f  Progress: %.3lf%%", 13, rho, (real)current_sample_count / (real)(total_samples + 1) * 100);
+			printf("%cRho: %f  Progress: %.3lf%%", 13, rho, (real)current_sample_count / (real)(total_samples + 1) * 100); //Print info to console
 			fflush(stdout);
 			rho = init_rho * (1 - current_sample_count / (real)(total_samples + 1));
 			if (rho < init_rho * 0.0001) rho = init_rho * 0.0001;
 		}
 
-		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r));
+		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r)); //Sample an edge
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
 
-		lu = u * dim;
-		for (int c = 0; c != dim; c++) vec_error[c] = 0;
+		lu = u * dim; //Get start point of embedding vector for the source vertex
+		for (int c = 0; c != dim; c++) vec_error[c] = 0; //Set error vector to 0
 
 		// NEGATIVE SAMPLING
 		for (int d = 0; d != num_negative + 1; d++)
 		{
-			if (d == 0)
+			if (d == 0) // Update with real edge
 			{
 				target = v;
 				label = 1;
 			}
-			else
+			else // Update with negative edge
 			{
 				target = neg_table[Rand(seed)];
 				label = 0;
 			}
-			lv = target * dim;
+			lv = target * dim; //Get start point of embedding vector for the target vertex
 			if (order == 1) Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
-			if (order == 2) Update(&emb_vertex[lu], &emb_context[lv], vec_error, label);
+			if (order == 2) Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
 		}
-		for (int c = 0; c != dim; c++) emb_vertex[c + lu] += vec_error[c];
+		for (int c = 0; c != dim; c++) emb_vertex[c + lu] += vec_error[c]; //Iüdate embedding vector of source vertex according to error vector
 
 		count++;
 	}
@@ -370,7 +398,7 @@ void Output()
 
 void TrainLINE() {
 	long a;
-	pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
+	pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t)); //Allocate memory for the threads
 
 	if (order != 1 && order != 2)
 	{
@@ -387,19 +415,19 @@ void TrainLINE() {
 
 	InitHashTable();
 	ReadData();
-	InitAliasTable();
-	InitVector();
+	InitAliasTable(); //Init alias sampling to allow sampling of edges according to their probability
+	InitVector(); //Init vertex embeddings
 	InitNegTable();
-	InitSigmoidTable();
+	InitSigmoidTable(); //Precalculate the sigmoid values (joint probability)
 
 	gsl_rng_env_setup();
-	gsl_T = gsl_rng_rand48;
-	gsl_r = gsl_rng_alloc(gsl_T);
-	gsl_rng_set(gsl_r, 314159265);
+	gsl_T = gsl_rng_rand48; //This is the Unix rand48 generator
+	gsl_r = gsl_rng_alloc(gsl_T); //Init the generator with above type
+	gsl_rng_set(gsl_r, 314159265); //Set the seed of the generator
 
 	clock_t start = clock();
 	printf("--------------------------------\n");
-	for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a);
+	for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a); //Init the vectors and each vector get its id
 	for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
 	printf("\n");
 	clock_t finish = clock();
@@ -459,7 +487,7 @@ int main(int argc, char **argv) {
 	if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
 	total_samples *= 1000000;
 	rho = init_rho;
-	vertex = (struct ClassVertex *)calloc(max_num_vertices, sizeof(struct ClassVertex));
+	vertex = (struct ClassVertex *)calloc(max_num_vertices, sizeof(struct ClassVertex)); //Init vertex array with memory for 1000 entries
 	TrainLINE();
 	return 0;
 }
