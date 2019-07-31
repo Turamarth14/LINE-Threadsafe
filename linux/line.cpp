@@ -338,16 +338,13 @@ Updates the embeddings of the target vertex vec_v and adds the change regarding 
 void Update(real *vec_u, real *vec_v, real *vec_error, int label)
 {
 	real x = 0, g;
-	#pragma omp parallel for num_threads(thread_count) reduction(+:x)
 	for (int c = 0; c <= dim; c++){
 		x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
 	}	
 	g = (label - FastSigmoid(x)) * rho;
-	#pragma omp parallel for num_threads(thread_count)
 	for (int c = 0; c < dim; c++){
 		vec_error[c] += g * vec_v[c];
 	}
-	#pragma omp parallel for num_threads(thread_count)
 	for (int c = 0; c < dim; c++){
 		vec_v[c] += g * vec_u[c];
 	}
