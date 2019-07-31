@@ -18,6 +18,7 @@ Publication: Jian Tang, Meng Qu, Mingzhe Wang, Ming Zhang, Jun Yan, Qiaozhu Mei.
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <omp.h>
 #include <gsl/gsl_rng.h>
 
 
@@ -38,7 +39,7 @@ struct ClassVertex {
 
 char network_file[MAX_STRING], embedding_file[MAX_STRING];
 struct ClassVertex *vertex;
-int is_binary = 0, num_threads = 1, order = 2, dim = 100, num_negative = 5;
+int is_binary = 0, thread_count = 1, order = 2, dim = 100, num_negative = 5;
 int *vertex_hash_table, *neg_table;
 int max_num_vertices = 1000, num_vertices = 0;
 long long total_samples = 1, current_sample_count = 0, num_edges = 0;
@@ -75,7 +76,10 @@ Each entries gets a value of -1
 void InitHashTable()
 {
 	vertex_hash_table = (int *)malloc(hash_table_size * sizeof(int));
-	for (int k = 0; k != hash_table_size; k++) vertex_hash_table[k] = -1;
+	#pragma omp parallel for num_threads(thread_count)
+	for (int k = 0; k < hash_table_size; k++){
+		vertex_hash_table[k] = -1;
+	}
 }
 
 //Insert the vertex into the hashtable assigning it as value the current number of vertices
@@ -201,8 +205,15 @@ void InitAliasTable()
 	long long cur_small_block, cur_large_block;
 	long long num_small_block = 0, num_large_block = 0;
 
-	for (long long k = 0; k != num_edges; k++) sum += edge_weight[k]; //Sum up all edge weights
-	for (long long k = 0; k != num_edges; k++) norm_prob[k] = edge_weight[k] * num_edges / sum; //Each edge gets a probability based on its weight divided by the total weight of all edges
+	#pragma omp parallel for num_threads(thread_count) reduction(+:sum)
+	for (long long k = 0; k < num_edges; k++){ 
+		sum += edge_weight[k]; //Sum up all edge weights
+	}
+
+	#pragma omp parallel for num_threads(thread_count)
+	for (long long k = 0; k < num_edges; k++){
+		norm_prob[k] = edge_weight[k] * num_edges / sum; //Each edge gets a probability based on its weight divided by the total weight of all edges
+	}	
 
 	for (long long k = num_edges - 1; k >= 0; k--) //Divide the edges in two blocks
 	{
@@ -246,13 +257,20 @@ void InitVector()
 
 	a = posix_memalign((void **)&emb_vertex, 128, (long long)num_vertices * dim * sizeof(real)); //For each vertex a float vector of size dim is allocated
 	if (emb_vertex == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
-	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
-		emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;	//Create random values in the intervall between -0.5 and 0.5 and divide them through the numbe of dimensions
-
+	#pragma omp parallel for num_threads(thread_count) collapse(2)
+	for (b = 0; b < dim; b++){
+		for (a = 0; a < num_vertices; a++){
+			emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;	//Create random values in the intervall between -0.5 and 0.5 and divide them through the numbe of dimensions
+		}
+	}
 	a = posix_memalign((void **)&emb_context, 128, (long long)num_vertices * dim * sizeof(real));
 	if (emb_context == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
-	for (b = 0; b < dim; b++) for (a = 0; a < num_vertices; a++)
-		emb_context[a * dim + b] = 0;	//Context vectors are initialized as 0 in all dimensions
+	#pragma omp parallel for num_threads(thread_count) collapse(2)
+	for (b = 0; b < dim; b++){
+		for (a = 0; a < num_vertices; a++){
+			emb_context[a * dim + b] = 0;	//Context vectors are initialized as 0 in all dimensions
+		}
+	}
 }
 
 /* Sample negative vertex samples according to vertex degrees */
@@ -261,7 +279,10 @@ void InitNegTable()
 	double sum = 0, cur_sum = 0, por = 0;
 	int vid = 0;
 	neg_table = (int *)malloc(neg_table_size * sizeof(int)); //Allocate array of int with 100 million entries
-	for (int k = 0; k != num_vertices; k++) sum += pow(vertex[k].degree, NEG_SAMPLING_POWER); //Sum the vertex degrees (sum of weights of connected edges) to the power of 0.75
+	#pragma omp parallel for num_threads(thread_count) reduction(+:sum)
+	for (int k = 0; k < num_vertices; k++){
+		sum += pow(vertex[k].degree, NEG_SAMPLING_POWER); //Sum the vertex degrees (sum of weights of connected edges) to the power of 0.75
+	}	
 	for (int k = 0; k != neg_table_size; k++)
 	{
 		if ((double)(k + 1) / neg_table_size > por)
@@ -285,11 +306,10 @@ void InitSigmoidTable()
 {
 	real x;
 	sigmoid_table = (real *)malloc((sigmoid_table_size + 1) * sizeof(real)); 
-	for (int k = 0; k != sigmoid_table_size; k++)
-	{
+	#pragma omp parallel for num_threads(thread_count)
+	for (int k = 0; k < sigmoid_table_size; k++){
 		x = 2.0 * SIGMOID_BOUND * k / sigmoid_table_size - SIGMOID_BOUND;
 		sigmoid_table[k] = 1 / (1 + exp(-x));
-		printf("%d\t%f\n", k, sigmoid_table[k]);
 	}
 }
 
@@ -318,10 +338,19 @@ Updates the embeddings of the target vertex vec_v and adds the change regarding 
 void Update(real *vec_u, real *vec_v, real *vec_error, int label)
 {
 	real x = 0, g;
-	for (int c = 0; c != dim; c++) x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
+	#pragma omp parallel for num_threads(thread_count) reduction(+:x)
+	for (int c = 0; c <= dim; c++){
+		x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
+	}	
 	g = (label - FastSigmoid(x)) * rho;
-	for (int c = 0; c != dim; c++) vec_error[c] += g * vec_v[c];
-	for (int c = 0; c != dim; c++) vec_v[c] += g * vec_u[c];
+	#pragma omp parallel for num_threads(thread_count)
+	for (int c = 0; c < dim; c++){
+		vec_error[c] += g * vec_v[c];
+	}
+	#pragma omp parallel for num_threads(thread_count)
+	for (int c = 0; c < dim; c++){
+		vec_v[c] += g * vec_u[c];
+	}
 }
 
 //Thread to train the model
@@ -337,7 +366,7 @@ void *TrainLINEThread(void *id)
 	{
 		//judge for exit
 		//Exit when the thread has done its share of the total number of samples to consider
-		if (count > total_samples / num_threads + 2) break;
+		if (count > total_samples / thread_count + 2) break;
 
 		//After 10000 samples print an update to the console and update variables
 		if (count - last_count > 10000)
@@ -382,6 +411,9 @@ void *TrainLINEThread(void *id)
 	pthread_exit(NULL);
 }
 
+/*
+Write embeddings to file
+*/
 void Output()
 {
 	FILE *fo = fopen(embedding_file, "wb");
@@ -398,7 +430,7 @@ void Output()
 
 void TrainLINE() {
 	long a;
-	pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t)); //Allocate memory for the threads
+	pthread_t *pt = (pthread_t *)malloc(thread_count * sizeof(pthread_t)); //Allocate memory for the threads
 
 	if (order != 1 && order != 2)
 	{
@@ -427,8 +459,8 @@ void TrainLINE() {
 
 	clock_t start = clock();
 	printf("--------------------------------\n");
-	for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a); //Init the vectors and each vector get its id
-	for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
+	for (a = 0; a < thread_count; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a); //Init the vectors and each vector get its id
+	for (a = 0; a < thread_count; a++) pthread_join(pt[a], NULL);
 	printf("\n");
 	clock_t finish = clock();
 	printf("Total time: %lf\n", (double)(finish - start) / CLOCKS_PER_SEC);
@@ -451,7 +483,8 @@ int ArgPos(char *str, int argc, char **argv) {
 int main(int argc, char **argv) {
 	int i;
 	if (argc == 1) {
-		printf("LINE: Large Information Network Embedding\n\n");
+		printf("LINE: Large Information Network Embedding\n");
+		printf("Thread-Safe Version\n\n");
 		printf("Options:\n");
 		printf("Parameters for training:\n");
 		printf("\t-train <file>\n");
@@ -484,7 +517,7 @@ int main(int argc, char **argv) {
 	if ((i = ArgPos((char *)"-negative", argc, argv)) > 0) num_negative = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-samples", argc, argv)) > 0) total_samples = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-rho", argc, argv)) > 0) init_rho = atof(argv[i + 1]);
-	if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
+	if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) thread_count = atoi(argv[i + 1]);
 	total_samples *= 1000000;
 	rho = init_rho;
 	vertex = (struct ClassVertex *)calloc(max_num_vertices, sizeof(struct ClassVertex)); //Init vertex array with memory for 1000 entries
