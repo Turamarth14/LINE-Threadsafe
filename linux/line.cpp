@@ -49,6 +49,9 @@ real *emb_vertex, *emb_context, *sigmoid_table;
 int *edge_source_id, *edge_target_id;
 double *edge_weight;
 
+pthread_mutex_t *vertexMutexes;
+pthread_mutex_t updateMutex;
+
 // Parameters for edge sampling
 long long *alias;
 double *prob;
@@ -312,7 +315,26 @@ void InitSigmoidTable()
 		sigmoid_table[k] = 1 / (1 + exp(-x));
 	}
 }
-
+/*
+Initialize the mutexes for each vertex
+*/
+void InitMutexes(){
+	vertexMutexes = (pthread_mutex_t *)malloc(num_vertices * sizeof(pthread_mutex_t));
+	for(int i = 0; i < num_vertices; i++){
+		pthread_mutex_init(&vertexMutexes[i], NULL);
+	}
+	pthread_mutex_init(&updateMutex, NULL);
+}
+/*
+Destroy the mutexes
+*/
+void DestroyMutexes(){
+	for(int i = 0; i < num_vertices; i++){
+		pthread_mutex_destroy(&vertexMutexes[i]);
+	}
+	//free(vertexMutexes);
+	pthread_mutex_destroy(&updateMutex);
+}
 /*
 Returns the sigmoid (joint probability) of the vertex product (x)
 */
@@ -366,43 +388,73 @@ void *TrainLINEThread(void *id)
 		if (count > total_samples / thread_count + 2) break;
 
 		//After 10000 samples print an update to the console and update variables
+		//printf("ID %lld Checking counts\n", (long long)id);
 		if (count - last_count > 10000)
 		{
+			pthread_mutex_lock(&updateMutex);
 			current_sample_count += count - last_count; //Increment the global current_sample_count by the number of samples the current thread has done since the last check
 			last_count = count;
 			printf("%cRho: %f  Progress: %.3lf%%", 13, rho, (real)current_sample_count / (real)(total_samples + 1) * 100); //Print info to console
 			fflush(stdout);
 			rho = init_rho * (1 - current_sample_count / (real)(total_samples + 1));
 			if (rho < init_rho * 0.0001) rho = init_rho * 0.0001;
+			pthread_mutex_unlock(&updateMutex);
 		}
-
+		//printf("ID %lld Sampling Edge\n", (long long)id);
 		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r)); //Sample an edge
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
-
+		//printf("Trying edge %lld - %lld\n", u, v);
+		if(pthread_mutex_trylock(&vertexMutexes[u]) != 0){
+			continue;
+		}
+		if(pthread_mutex_trylock(&vertexMutexes[v]) != 0){
+			pthread_mutex_unlock(&vertexMutexes[u]);
+			continue;
+		}
+		//printf("ID %lld Sampled Edge\n", (long long)id);
 		lu = u * dim; //Get start point of embedding vector for the source vertex
 		for (int c = 0; c != dim; c++) vec_error[c] = 0; //Set error vector to 0
 
+		// UPDATE WITH REAL EDGE
+		lv = v * dim;
+		label = 1;
+		if (order == 1){
+			Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
+		}
+		if (order == 2){
+			Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
+		}		
 		// NEGATIVE SAMPLING
-		for (int d = 0; d != num_negative + 1; d++)
-		{
-			if (d == 0) // Update with real edge
-			{
-				target = v;
-				label = 1;
+		int d = 0;
+		label = 0;
+		while(d < num_negative){
+			// Update with negative edge
+			target = neg_table[Rand(seed)];
+			if(target == v || target == u){
+				continue;
 			}
-			else // Update with negative edge
-			{
-				target = neg_table[Rand(seed)];
-				label = 0;
+			if(pthread_mutex_trylock(&vertexMutexes[target]) != 0){
+				continue;
 			}
 			lv = target * dim; //Get start point of embedding vector for the target vertex
-			if (order == 1) Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
-			if (order == 2) Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
+			if (order == 1){
+				Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
+			}
+			if (order == 2){
+				Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
+			}
+			pthread_mutex_unlock(&vertexMutexes[target]);
+			//printf("\tInside loop: Done = %d Trying %lld\n", d, target);	
+			d++;
 		}
-		for (int c = 0; c != dim; c++) emb_vertex[c + lu] += vec_error[c]; //Iüdate embedding vector of source vertex according to error vector
-
+		pthread_mutex_unlock(&vertexMutexes[v]);
+		for (int c = 0; c != dim; c++){
+			emb_vertex[c + lu] += vec_error[c]; //Update embedding vector of source vertex according to error vector
+		}
+		pthread_mutex_unlock(&vertexMutexes[u]);
 		count++;
+		//printf("Count = %lld\n",count);
 	}
 	free(vec_error);
 	pthread_exit(NULL);
@@ -440,6 +492,7 @@ void TrainLINE() {
 	printf("Negative: %d\n", num_negative);
 	printf("Dimension: %d\n", dim);
 	printf("Initial rho: %lf\n", init_rho);
+	printf("Number of threads: %d\n", thread_count);
 	printf("--------------------------------\n");
 
 	InitHashTable();
@@ -448,6 +501,7 @@ void TrainLINE() {
 	InitVector(); //Init vertex embeddings
 	InitNegTable();
 	InitSigmoidTable(); //Precalculate the sigmoid values (joint probability)
+	InitMutexes();
 
 	gsl_rng_env_setup();
 	gsl_T = gsl_rng_rand48; //This is the Unix rand48 generator
@@ -461,7 +515,7 @@ void TrainLINE() {
 	printf("\n");
 	clock_t finish = clock();
 	printf("Total time: %lf\n", (double)(finish - start) / CLOCKS_PER_SEC);
-
+	DestroyMutexes();
 	Output();
 }
 
