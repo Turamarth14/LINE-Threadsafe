@@ -18,7 +18,6 @@ Publication: Jian Tang, Meng Qu, Mingzhe Wang, Ming Zhang, Jun Yan, Qiaozhu Mei.
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
-#include <omp.h>
 #include <gsl/gsl_rng.h>
 
 
@@ -30,7 +29,7 @@ const int hash_table_size = 30000000;
 const int neg_table_size = 1e8;
 const int sigmoid_table_size = 1000;
 
-typedef float real;                    // Precision of float numbers
+typedef double real;                    // Precision of float numbers
 
 struct ClassVertex {
 	double degree;
@@ -79,7 +78,6 @@ Each entries gets a value of -1
 void InitHashTable()
 {
 	vertex_hash_table = (int *)malloc(hash_table_size * sizeof(int));
-	#pragma omp parallel for num_threads(thread_count)
 	for (int k = 0; k < hash_table_size; k++){
 		vertex_hash_table[k] = -1;
 	}
@@ -208,12 +206,10 @@ void InitAliasTable()
 	long long cur_small_block, cur_large_block;
 	long long num_small_block = 0, num_large_block = 0;
 
-	#pragma omp parallel for num_threads(thread_count) reduction(+:sum)
 	for (long long k = 0; k < num_edges; k++){ 
 		sum += edge_weight[k]; //Sum up all edge weights
 	}
 
-	#pragma omp parallel for num_threads(thread_count)
 	for (long long k = 0; k < num_edges; k++){
 		norm_prob[k] = edge_weight[k] * num_edges / sum; //Each edge gets a probability based on its weight divided by the total weight of all edges
 	}	
@@ -249,7 +245,10 @@ void InitAliasTable()
 
 long long SampleAnEdge(double rand_value1, double rand_value2)
 {
-	long long k = (long long)num_edges * rand_value1;
+	long long k = (long long) (num_edges * rand_value1);//-1; //Fix proposed in https://github.com/lferry007/LargeVis/issues/9
+	/*if(k < 0){
+		k = 0;
+	}*/
 	return rand_value2 < prob[k] ? k : alias[k];
 }
 
@@ -260,7 +259,6 @@ void InitVector()
 
 	a = posix_memalign((void **)&emb_vertex, 128, (long long)num_vertices * dim * sizeof(real)); //For each vertex a float vector of size dim is allocated
 	if (emb_vertex == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
-	#pragma omp parallel for num_threads(thread_count) collapse(2)
 	for (b = 0; b < dim; b++){
 		for (a = 0; a < num_vertices; a++){
 			emb_vertex[a * dim + b] = (rand() / (real)RAND_MAX - 0.5) / dim;	//Create random values in the intervall between -0.5 and 0.5 and divide them through the numbe of dimensions
@@ -268,7 +266,6 @@ void InitVector()
 	}
 	a = posix_memalign((void **)&emb_context, 128, (long long)num_vertices * dim * sizeof(real));
 	if (emb_context == NULL) { printf("Error: memory allocation failed\n"); exit(1); }
-	#pragma omp parallel for num_threads(thread_count) collapse(2)
 	for (b = 0; b < dim; b++){
 		for (a = 0; a < num_vertices; a++){
 			emb_context[a * dim + b] = 0;	//Context vectors are initialized as 0 in all dimensions
@@ -282,7 +279,6 @@ void InitNegTable()
 	double sum = 0, cur_sum = 0, por = 0;
 	int vid = 0;
 	neg_table = (int *)malloc(neg_table_size * sizeof(int)); //Allocate array of int with 100 million entries
-	#pragma omp parallel for num_threads(thread_count) reduction(+:sum)
 	for (int k = 0; k < num_vertices; k++){
 		sum += pow(vertex[k].degree, NEG_SAMPLING_POWER); //Sum the vertex degrees (sum of weights of connected edges) to the power of 0.75
 	}	
@@ -309,7 +305,6 @@ void InitSigmoidTable()
 {
 	real x;
 	sigmoid_table = (real *)malloc((sigmoid_table_size + 1) * sizeof(real)); 
-	#pragma omp parallel for num_threads(thread_count)
 	for (int k = 0; k < sigmoid_table_size; k++){
 		x = 2.0 * SIGMOID_BOUND * k / sigmoid_table_size - SIGMOID_BOUND;
 		sigmoid_table[k] = 1 / (1 + exp(-x));
@@ -340,9 +335,21 @@ Returns the sigmoid (joint probability) of the vertex product (x)
 */
 real FastSigmoid(real x)
 {
-	if (x > SIGMOID_BOUND) return 1;
-	else if (x < -SIGMOID_BOUND) return 0;
+	if (x > SIGMOID_BOUND){
+		//printf("Returning 1\n");
+		//fflush(stdout);
+		return 1;
+	} 
+	else if (x < -SIGMOID_BOUND){
+		//printf("Returning 0\n");
+		//fflush(stdout);
+		return 0;
+	}
+		//printf("x = %f Sigmoid_Bound = %d sigmoid_table_size = %d\n", x, SIGMOID_BOUND, sigmoid_table_size);
+		//fflush(stdout);
 	int k = (x + SIGMOID_BOUND) * sigmoid_table_size / SIGMOID_BOUND / 2;
+		//printf("k = %d\n",k);
+		//fflush(stdout);
 	return sigmoid_table[k];
 }
 
@@ -357,23 +364,28 @@ int Rand(unsigned long long &seed)
 /*
 Updates the embeddings of the target vertex vec_v and adds the change regarding the source vertex to vec_error
 */
-void Update(real *vec_u, real *vec_v, real *vec_error, int label)
+void Update(real *vec_u, real *vec_v, real *vec_error, int label, long long id)
 {
 	real x = 0, g;
-	for (int c = 0; c <= dim; c++){
+	for (int c = 0; c < dim; c++){
 		x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
-	}	
+	}
+		//printf("ID = %lld Calculating Sigmoid label = %d and x = %f and rho = %f\n", id, label, x, rho);
+		//fflush(stdout);	
 	g = (label - FastSigmoid(x)) * rho;
+		//printf("ID = %lld Updating Error\n", id);
+		//fflush(stdout);
 	for (int c = 0; c < dim; c++){
 		vec_error[c] += g * vec_v[c];
 	}
 	for (int c = 0; c < dim; c++){
 		vec_v[c] += g * vec_u[c];
 	}
+		//printf("Done\n");
+		//fflush(stdout);
 }
 
 //Thread to train the model
-//Probably not threadsafe at all
 void *TrainLINEThread(void *id)
 {
 	long long u, v, lu, lv, target, label;
@@ -401,10 +413,12 @@ void *TrainLINEThread(void *id)
 			pthread_mutex_unlock(&updateMutex);
 		}
 		//printf("ID %lld Sampling Edge\n", (long long)id);
+		//fflush(stdout);
 		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r)); //Sample an edge
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
 		//printf("Trying edge %lld - %lld\n", u, v);
+		//fflush(stdout);
 		if(pthread_mutex_trylock(&vertexMutexes[u]) != 0){
 			continue;
 		}
@@ -413,18 +427,27 @@ void *TrainLINEThread(void *id)
 			continue;
 		}
 		//printf("ID %lld Sampled Edge\n", (long long)id);
+		//fflush(stdout);
 		lu = u * dim; //Get start point of embedding vector for the source vertex
-		for (int c = 0; c != dim; c++) vec_error[c] = 0; //Set error vector to 0
+		for (int c = 0; c < dim; c++){
+			vec_error[c] = 0; //Set error vector to 0
+		}
 
 		// UPDATE WITH REAL EDGE
 		lv = v * dim;
 		label = 1;
 		if (order == 1){
-			Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
+			//printf("ID %lld Pre Update with real Edge\n", (long long)id);
+			//fflush(stdout);
+			Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label, (long long) id);
+			//printf("ID %lld After Update with real Edge\n", (long long)id);
+			//fflush(stdout);
 		}
 		if (order == 2){
-			Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
+			Update(&emb_vertex[lu], &emb_context[lv], vec_error, label, (long long) id); //For second-order use the context embedding of the target vertex
 		}		
+		//printf("ID %lld Done with real Edge\n", (long long)id);
+		//fflush(stdout);
 		// NEGATIVE SAMPLING
 		int d = 0;
 		label = 0;
@@ -439,20 +462,22 @@ void *TrainLINEThread(void *id)
 			}
 			lv = target * dim; //Get start point of embedding vector for the target vertex
 			if (order == 1){
-				Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label);
+				Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label, (long long) id);
 			}
 			if (order == 2){
-				Update(&emb_vertex[lu], &emb_context[lv], vec_error, label); //For second-order use the context embedding of the target vertex
+				Update(&emb_vertex[lu], &emb_context[lv], vec_error, label, (long long) id); //For second-order use the context embedding of the target vertex
 			}
 			pthread_mutex_unlock(&vertexMutexes[target]);
 			//printf("\tInside loop: Done = %d Trying %lld\n", d, target);	
 			d++;
 		}
 		pthread_mutex_unlock(&vertexMutexes[v]);
-		for (int c = 0; c != dim; c++){
+		for (int c = 0; c < dim; c++){
 			emb_vertex[c + lu] += vec_error[c]; //Update embedding vector of source vertex according to error vector
 		}
 		pthread_mutex_unlock(&vertexMutexes[u]);
+		//printf("ID %lld Unlocked Mutexes\n", (long long)id);
+		//fflush(stdout);
 		count++;
 		//printf("Count = %lld\n",count);
 	}
@@ -479,6 +504,7 @@ void Output()
 
 void TrainLINE() {
 	long a;
+	int result;
 	pthread_t *pt = (pthread_t *)malloc(thread_count * sizeof(pthread_t)); //Allocate memory for the threads
 
 	if (order != 1 && order != 2)
@@ -510,8 +536,22 @@ void TrainLINE() {
 
 	clock_t start = clock();
 	printf("--------------------------------\n");
-	for (a = 0; a < thread_count; a++) pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a); //Init the vectors and each vector get its id
-	for (a = 0; a < thread_count; a++) pthread_join(pt[a], NULL);
+	for (a = 0; a < thread_count; a++){
+		result = pthread_create(&pt[a], NULL, TrainLINEThread, (void *)a); //Init the vectors and each vector get its id
+		if(result != 0){
+			printf("An error occurred while creating thread %ld\n", a);
+			fflush(stdout);
+			return;
+		}
+	} 
+	for (a = 0; a < thread_count; a++){
+		result = pthread_join(pt[a], NULL);
+		if(result != 0){
+			printf("An error occurred while joining thread %ld\n", a);
+			fflush(stdout);
+			return;
+		}
+	}
 	printf("\n");
 	clock_t finish = clock();
 	printf("Total time: %lf\n", (double)(finish - start) / CLOCKS_PER_SEC);
