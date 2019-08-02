@@ -327,7 +327,7 @@ void DestroyMutexes(){
 	for(int i = 0; i < num_vertices; i++){
 		pthread_mutex_destroy(&vertexMutexes[i]);
 	}
-	//free(vertexMutexes);
+	free(vertexMutexes);
 	pthread_mutex_destroy(&updateMutex);
 }
 /*
@@ -417,8 +417,19 @@ void *TrainLINEThread(void *id)
 		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r)); //Sample an edge
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
-		//printf("Trying edge %lld - %lld\n", u, v);
-		//fflush(stdout);
+		if(u == v){
+			continue;
+		}
+		/*printf("Trying edge %lld - %lld\n", u, v);
+		fflush(stdout);
+		if(u < 0 || u >= 1000){
+			printf("u = %lld\n", u);
+			fflush(stdout);
+		}
+		if(v < 0 || v >= 1000){
+			printf("v = %lld\n", v);
+			fflush(stdout);
+		}*/
 		if(pthread_mutex_trylock(&vertexMutexes[u]) != 0){
 			continue;
 		}
