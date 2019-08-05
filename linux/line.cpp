@@ -336,20 +336,12 @@ Returns the sigmoid (joint probability) of the vertex product (x)
 real FastSigmoid(real x)
 {
 	if (x > SIGMOID_BOUND){
-		//printf("Returning 1\n");
-		//fflush(stdout);
 		return 1;
 	} 
 	else if (x < -SIGMOID_BOUND){
-		//printf("Returning 0\n");
-		//fflush(stdout);
 		return 0;
 	}
-		//printf("x = %f Sigmoid_Bound = %d sigmoid_table_size = %d\n", x, SIGMOID_BOUND, sigmoid_table_size);
-		//fflush(stdout);
 	int k = (x + SIGMOID_BOUND) * sigmoid_table_size / SIGMOID_BOUND / 2;
-		//printf("k = %d\n",k);
-		//fflush(stdout);
 	return sigmoid_table[k];
 }
 
@@ -370,19 +362,13 @@ void Update(real *vec_u, real *vec_v, real *vec_error, int label, long long id)
 	for (int c = 0; c < dim; c++){
 		x += vec_u[c] * vec_v[c]; //Calculate dot product of the two vectors
 	}
-		//printf("ID = %lld Calculating Sigmoid label = %d and x = %f and rho = %f\n", id, label, x, rho);
-		//fflush(stdout);	
 	g = (label - FastSigmoid(x)) * rho;
-		//printf("ID = %lld Updating Error\n", id);
-		//fflush(stdout);
 	for (int c = 0; c < dim; c++){
 		vec_error[c] += g * vec_v[c];
 	}
 	for (int c = 0; c < dim; c++){
 		vec_v[c] += g * vec_u[c];
 	}
-		//printf("Done\n");
-		//fflush(stdout);
 }
 
 //Thread to train the model
@@ -400,7 +386,6 @@ void *TrainLINEThread(void *id)
 		if (count > total_samples / thread_count + 2) break;
 
 		//After 10000 samples print an update to the console and update variables
-		//printf("ID %lld Checking counts\n", (long long)id);
 		if (count - last_count > 10000)
 		{
 			pthread_mutex_lock(&updateMutex);
@@ -412,24 +397,12 @@ void *TrainLINEThread(void *id)
 			if (rho < init_rho * 0.0001) rho = init_rho * 0.0001;
 			pthread_mutex_unlock(&updateMutex);
 		}
-		//printf("ID %lld Sampling Edge\n", (long long)id);
-		//fflush(stdout);
 		curedge = SampleAnEdge(gsl_rng_uniform(gsl_r), gsl_rng_uniform(gsl_r)); //Sample an edge
 		u = edge_source_id[curedge];
 		v = edge_target_id[curedge];
 		if(u == v){
 			continue;
 		}
-		/*printf("Trying edge %lld - %lld\n", u, v);
-		fflush(stdout);
-		if(u < 0 || u >= 1000){
-			printf("u = %lld\n", u);
-			fflush(stdout);
-		}
-		if(v < 0 || v >= 1000){
-			printf("v = %lld\n", v);
-			fflush(stdout);
-		}*/
 		if(pthread_mutex_trylock(&vertexMutexes[u]) != 0){
 			continue;
 		}
@@ -437,8 +410,6 @@ void *TrainLINEThread(void *id)
 			pthread_mutex_unlock(&vertexMutexes[u]);
 			continue;
 		}
-		//printf("ID %lld Sampled Edge\n", (long long)id);
-		//fflush(stdout);
 		lu = u * dim; //Get start point of embedding vector for the source vertex
 		for (int c = 0; c < dim; c++){
 			vec_error[c] = 0; //Set error vector to 0
@@ -448,17 +419,11 @@ void *TrainLINEThread(void *id)
 		lv = v * dim;
 		label = 1;
 		if (order == 1){
-			//printf("ID %lld Pre Update with real Edge\n", (long long)id);
-			//fflush(stdout);
 			Update(&emb_vertex[lu], &emb_vertex[lv], vec_error, label, (long long) id);
-			//printf("ID %lld After Update with real Edge\n", (long long)id);
-			//fflush(stdout);
 		}
 		if (order == 2){
 			Update(&emb_vertex[lu], &emb_context[lv], vec_error, label, (long long) id); //For second-order use the context embedding of the target vertex
 		}		
-		//printf("ID %lld Done with real Edge\n", (long long)id);
-		//fflush(stdout);
 		// NEGATIVE SAMPLING
 		int d = 0;
 		label = 0;
@@ -479,7 +444,6 @@ void *TrainLINEThread(void *id)
 				Update(&emb_vertex[lu], &emb_context[lv], vec_error, label, (long long) id); //For second-order use the context embedding of the target vertex
 			}
 			pthread_mutex_unlock(&vertexMutexes[target]);
-			//printf("\tInside loop: Done = %d Trying %lld\n", d, target);	
 			d++;
 		}
 		pthread_mutex_unlock(&vertexMutexes[v]);
@@ -487,10 +451,7 @@ void *TrainLINEThread(void *id)
 			emb_vertex[c + lu] += vec_error[c]; //Update embedding vector of source vertex according to error vector
 		}
 		pthread_mutex_unlock(&vertexMutexes[u]);
-		//printf("ID %lld Unlocked Mutexes\n", (long long)id);
-		//fflush(stdout);
 		count++;
-		//printf("Count = %lld\n",count);
 	}
 	free(vec_error);
 	pthread_exit(NULL);
